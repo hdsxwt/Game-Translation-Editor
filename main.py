@@ -387,54 +387,70 @@ class TransEditorApp:
 		self.log(f"已交换语言方向。当前 Source: {self.source_lang}, Target: {self.target_lang}")
 
 	def search_in_table(self, event=None):
-		"""
-		在当前显示的行中（筛选之后的）查找下一个匹配项，
-		匹配列：Key、Source、Target（模糊匹配，不区分大小写）
+		"""循环搜索：
+		- 普通文本：模糊匹配（子串忽略大小写）
+		- 用双引号包裹："text" → 全字匹配（整个单元格值等于 text，忽略大小写）
 		"""
 		search_text = self.search_var.get().strip()
 		if not search_text:
-			self.log("请输入搜索关键词")	
+			self.log("请输入搜索关键词")
 			return
 
-		# 获取当前所有可见行的 item ID 列表（顺序与显示一致）
+		# 处理双引号全字匹配模式
+		exact_match = False
+		if search_text.startswith('"') and search_text.endswith('"') and len(search_text) >= 2:
+			exact_match = True
+			search_text = search_text[1:-1]  # 去掉两端引号
+
 		children = self.tree.get_children()
 		if not children:
 			self.log("表格为空，无法搜索")
 			return
 
-		# 确定当前选中的行索引（如果有），从它的下一个开始查
+		# 确定起始位置
 		current_selection = self.tree.selection()
+		start_idx = 0
 		if current_selection:
 			try:
-				start_idx = children.index(current_selection[0])
+				start_idx = children.index(current_selection[0]) + 1
 			except ValueError:
-				start_idx = -1
-		else:
-			start_idx = -1
+				start_idx = 0
 
-		# 从下一行开始循环查找
-		search_order = range(start_idx + 1, len(children))
-		# 如果到末尾还没找到，从头再找（循环）
+		# 匹配函数
+		def match_row(values):
+			# values = [行号, key, source, target]
+			if exact_match:
+				# 全字匹配（忽略大小写）
+				return (values[1].lower() == search_text.lower() or
+						values[2].lower() == search_text.lower() or
+						values[3].lower() == search_text.lower())
+			else:
+				# 模糊匹配（子串）
+				return (search_text.lower() in str(values[1]).lower() or
+						search_text.lower() in str(values[2]).lower() or
+						search_text.lower() in str(values[3]).lower())
+
 		found_item = None
-		for i in search_order:
-			item = children[i]
-			values = self.tree.item(item, "values")
-			# 在 key, source, target 中任意匹配
-			if (search_text.lower() in str(values[1]).lower() or
-				search_text.lower() in str(values[2]).lower() or
-				search_text.lower() in str(values[3]).lower()):
-				found_item = item
+		# 第一轮：从 start_idx 到末尾
+		for i in range(start_idx, len(children)):
+			if match_row(self.tree.item(children[i], "values")):
+				found_item = children[i]
 				break
 
+		# 如果未找到，且起始位置 > 0，从头扫描到 start_idx-1
+		if not found_item and start_idx > 0:
+			for i in range(0, start_idx):
+				if match_row(self.tree.item(children[i], "values")):
+					found_item = children[i]
+					break
+
+		mode = "全字匹配" if exact_match else "模糊匹配"
 		if found_item:
-			# 选中并滚动到可见
 			self.tree.selection_set(found_item)
 			self.tree.see(found_item)
-			self.log(f"找到匹配: {search_text}")
+			self.log(f"找到 ({mode}): {search_text}")
 		else:
-			# 循环到开头再找一遍（如果启用循环）
-			# 如果找不到，提示
-			self.log(f"未找到包含 '{search_text}' 的行")
+			self.log(f"未找到 ({mode}): {search_text}")
 
 	# ---------- 百度翻译选中行 ----------
 	def translate_selected(self):
