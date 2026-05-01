@@ -6,6 +6,7 @@ import requests
 import threading
 import json
 import os
+import time
 
 from datetime import datetime
 
@@ -19,7 +20,7 @@ def baidu_translate(q, from_lang, to_lang, appid, secret_key):
 	salt = str(random.randint(32768, 65536))
 	sign_str = appid + q + salt + secret_key
 	sign = hashlib.md5(sign_str.encode()).hexdigest()
-	url = "https://api.fanyi.baidu.com/api/trans/vip/translate"
+	url = "https://fanyi-api.baidu.com/ait/api/aiTextTranslate"
 	params = {
 		"q": q,
 		"from": from_lang,
@@ -31,6 +32,7 @@ def baidu_translate(q, from_lang, to_lang, appid, secret_key):
 	resp = requests.get(url, params=params, timeout=5)
 	result = resp.json()
 	if "trans_result" in result:
+		time.sleep(0.1)  # 避免过快连续请求导致的错误
 		return result["trans_result"][0]["dst"]
 	else:
 		error_msg = result.get("error_msg", "Unknown error")
