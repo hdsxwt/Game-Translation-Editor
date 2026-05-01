@@ -107,8 +107,8 @@ class TransEditorApp:
 		ttk.Separator(toolbar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=5)
 		ttk.Button(toolbar, text="交换语言方向", command=self.swap_languages).pack(side=tk.LEFT, padx=2)
 		ttk.Button(toolbar, text="翻译选中行", command=self.translate_selected).pack(side=tk.LEFT, padx=2)
-		ttk.Button(toolbar, text="百度API设置", command=self.setup_baidu_api).pack(side=tk.LEFT, padx=2)
-		ttk.Button(toolbar, text="保存", command=self.save_action).pack(side=tk.LEFT, padx=2)
+		ttk.Button(toolbar, text="跳转到行", command=self.goto_line).pack(side=tk.LEFT, padx=2)
+		ttk.Button(toolbar, text="保存", command=self.save_action).pack(side=tk.RIGHT, padx=2)
 
 	def create_filter_frame(self):
 		filter_frame = ttk.Frame(self.root)
@@ -351,6 +351,26 @@ class TransEditorApp:
 
 	def on_search_enter(self, event):
 		self.search_in_table()
+
+	def goto_line(self):
+		"""弹出输入框，根据行号定位到表格中对应行"""
+		line_no = simpledialog.askinteger("跳转到行", "请输入行号（原始文件行号）:",
+										parent=self.root, minvalue=1)
+		if line_no is None:
+			return
+
+		# 在当前Treeview中搜索行号
+		for item in self.tree.get_children():
+			values = self.tree.item(item, "values")
+			if values and int(values[0]) == line_no:
+				self.tree.selection_set(item)
+				self.tree.see(item)
+				self.log(f"已跳转到行号 {line_no}")
+				return
+
+		# 如果未找到（可能被筛选隐藏）
+		messagebox.showinfo("未找到", f"行号 {line_no} 在当前显示中不存在（可能被过滤掉）。")
+		self.log(f"跳转失败：行号 {line_no} 未显示")
 
 	# ---------- 语言交换 ----------
 	def swap_languages(self):
