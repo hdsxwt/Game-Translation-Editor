@@ -47,6 +47,10 @@ class TransEditorApp:
 		self.source_data = {}   # 源语言键值对
 		self.target_data = {}   # 目标语言键值对
 		self.rows = []          # 表格显示用: [key, source_text, target_text]
+		self.source_raw_lines = []
+		self.target_raw_lines = []
+		self.source_entries = []
+		self.target_entries = []
 		self.source_lang = "EN"
 		self.target_lang = "CN"
 		self.source_file = None
@@ -73,6 +77,7 @@ class TransEditorApp:
 			self.load_source_file(silent=True)   # 稍后定义 silent 参数
 		if self.target_file and os.path.exists(self.target_file):
 			self.load_target_file(silent=True)
+
 		
 		# 初始化日志
 		self.log("应用启动成功。")
@@ -103,6 +108,7 @@ class TransEditorApp:
 		ttk.Button(toolbar, text="交换语言方向", command=self.swap_languages).pack(side=tk.LEFT, padx=2)
 		ttk.Button(toolbar, text="翻译选中行", command=self.translate_selected).pack(side=tk.LEFT, padx=2)
 		ttk.Button(toolbar, text="百度API设置", command=self.setup_baidu_api).pack(side=tk.LEFT, padx=2)
+		ttk.Button(toolbar, text="保存", command=self.save_action).pack(side=tk.LEFT, padx=2)
 
 	def create_filter_frame(self):
 		filter_frame = ttk.Frame(self.root)
@@ -178,41 +184,35 @@ class TransEditorApp:
 		self.log_text.see(tk.END)
 		self.log_text.configure(state=tk.DISABLED)
 
-	# ---------- 文件解析 ----------
-	def parse_file(self, filepath, lang_label):
-		"""解析翻译文件，返回 (键值对字典, 注释数, 标注数)"""
-		data = {}
+	# ---------- 行解析 ----------
+	def _parse_lines(self, lines, label):
+		"""返回 (entries, data_dict)
+		entries = [(line_no, key, value), ...]  有效键值对按行号顺序
+		data_dict = {key: value}
+		"""
+		entries = []
+		data_dict = {}
 		comments = 0
 		labels = 0
-		try:
-			with open(filepath, "r", encoding="utf-8") as f:
-				lines = f.readlines()
-		except Exception as e:
-			messagebox.showerror("错误", f"无法读取文件 {filepath} : {e}")
-			self.log(f"读取文件失败: {filepath} - {e}")
-			return None, 0, 0
-
-		for line in lines:
-			line = line.strip()
-			if not line:
+		for i, line in enumerate(lines, start=1):
+			stripped = line.strip()
+			if not stripped:
 				continue
-			if line.startswith("//"):
+			if stripped.startswith("//"):
 				comments += 1
 				continue
-			if line.startswith("==") and line.endswith("=="):
+			if stripped.startswith("==") and stripped.endswith("=="):
 				labels += 1
 				continue
-			# 键值对
-			if "=" in line:
-				key, _, value = line.partition("=")
+			if "=" in stripped:
+				key, _, value = stripped.partition("=")
 				key = key.strip()
 				value = value.strip()
 				if key:
-					data[key] = value
-				# key为空的行忽略
-			# 其他无等号的行忽略，不视为错误
-		self.log(f"解析 {lang_label} 文件完成: {filepath} -> {len(data)} 个键值对, 注释 {comments} 行, 标注 {labels} 行")
-		return data, comments, labels
+					entries.append((i, key, value))
+					data_dict[key] = value
+		self.log(f"解析 {label} 文件完成: {len(entries)} 个键值对, 注释 {comments} 行, 标注 {labels} 行")
+		return entries, data_dict
 
 	def load_source_file(self, path=None, silent=False):
 		"""加载源语言文件。若提供 path 则直接使用，否则弹出选择对话框"""
@@ -225,11 +225,16 @@ class TransEditorApp:
 		if not path:
 			return
 		self.source_file = path
-		data, _, _ = self.parse_file(path, "源语言(Source)")
-		if data is not None:
-			self.source_data = data
-			self.log(f"源语言文件已加载，共 {len(self.source_data)} 条记录")
-			self.refresh_table()
+		try:
+			with open(path, 'r', encoding='utf-8') as f:
+				self.source_raw_lines = f.readlines()
+		except Exception as e:
+			self.log(f"读取源文件失败: {e}")
+			return
+		self.source_entries, self.source_data = self._parse_lines(self.source_raw_lines, "源语言")
+		self.log(f"源语言文件已加载，共 {len(self.source_data)} 条记录")
+		self.save_config()
+		self.refresh_table()
 
 	def load_target_file(self, path=None, silent=False):
 		"""加载目标语言文件"""
@@ -242,21 +247,26 @@ class TransEditorApp:
 		if not path:
 			return
 		self.target_file = path
-		data, _, _ = self.parse_file(path, "目标语言(Target)")
-		if data is not None:
-			self.target_data = data
-			self.log(f"目标语言文件已加载，共 {len(self.target_data)} 条记录")
-			self.refresh_table()
+		try:
+			with open(path, 'r', encoding='utf-8') as f:
+				self.target_raw_lines = f.readlines()
+		except Exception as e:
+			self.log(f"读取目标文件失败: {e}")
+			return
+		self.target_entries, self.target_data = self._parse_lines(self.target_raw_lines, "目标语言")
+		self.log(f"目标语言文件已加载，共 {len(self.target_data)} 条记录")
+		self.save_config()
+		self.refresh_table()
 
 	# ---------- 表格数据构建与刷新 ----------
 	def build_rows(self):
-		"""根据当前 source_data 和 target_data 以及语言方向构建行列表"""
-		all_keys = set(self.source_data.keys()) | set(self.target_data.keys())
+		"""基于源文件有效行构建表格行：[[line_no, key, source_val, target_val], ...]"""
 		rows = []
-		for key in sorted(all_keys):   # 默认按键排序
-			src_val = self.source_data.get(key, "")
-			tgt_val = self.target_data.get(key, "")
-			rows.append([key, src_val, tgt_val])
+		# 快速查找目标值（若无目标文件则留空）
+		target_dict = {key: val for _, key, val in self.target_entries} if self.target_entries else {}
+		for line_no, key, src_val in self.source_entries:
+			tgt_val = target_dict.get(key, "")
+			rows.append([line_no, key, src_val, tgt_val])
 		return rows
 
 	def refresh_table(self):
@@ -268,33 +278,25 @@ class TransEditorApp:
 
 	def apply_filter_and_sort(self):
 		filter_text = self.filter_var.get().strip().lower()
-		
 		# 筛选
-		filtered = []
-		for row in self.rows:   # row: [key, source, target]
-			if not filter_text:
-				filtered.append(row)
-			else:
-				if (filter_text in str(row[0]).lower() or 
-					filter_text in str(row[1]).lower() or 
-					filter_text in str(row[2]).lower()):
-					filtered.append(row)
-		
+		filtered = [row for row in self.rows if not filter_text or
+					(filter_text in str(row[1]).lower() or
+					filter_text in str(row[2]).lower() or
+					filter_text in str(row[3]).lower())]
 		# 排序
-		if self.sort_column is not None:
-			col_idx = {"no": None, "key": 0, "source": 1, "target": 2}.get(self.sort_column)
-			if col_idx is not None:   # 不是 no 列
-				filtered.sort(key=lambda x: str(x[col_idx]).lower(), reverse=self.sort_reverse)
-			else:  # no 列特殊处理：按数字排序
-				# filtered 已是有序列表，但需要根据 self.sort_reverse 反转
-				if self.sort_reverse:
-					filtered.reverse()
-				# 否则保持原顺序
-		# 更新treeview
-		self.tree.delete(*self.tree.get_children())
-		for i, row in enumerate(filtered):
-			self.tree.insert("", tk.END, values=[i+1] + row)  # row = [key, source, target]
+		if self.sort_column == "no":
+			filtered.sort(key=lambda x: x[0], reverse=self.sort_reverse)
+		elif self.sort_column == "key":
+			filtered.sort(key=lambda x: str(x[1]).lower(), reverse=self.sort_reverse)
+		elif self.sort_column == "source":
+			filtered.sort(key=lambda x: str(x[2]).lower(), reverse=self.sort_reverse)
+		elif self.sort_column == "target":
+			filtered.sort(key=lambda x: str(x[3]).lower(), reverse=self.sort_reverse)
 
+		self.tree.delete(*self.tree.get_children())
+		for row in filtered:
+			self.tree.insert("", tk.END, values=row)
+		# 更新列头
 		self.tree.heading("source", text=f"Source ({self.source_lang})")
 		self.tree.heading("target", text=f"Target ({self.target_lang})")
 		self.log(f"表格已刷新，当前显示 {len(filtered)} 行")
@@ -317,47 +319,49 @@ class TransEditorApp:
 		region = self.tree.identify_region(event.x, event.y)
 		if region != "cell":
 			return
-		column = self.tree.identify_column(event.x)   # 返回 '#1' ~ '#4'
+		column = self.tree.identify_column(event.x)
 		item = self.tree.selection()[0] if self.tree.selection() else None
 		if not item:
 			return
-
 		col_index = int(column.replace("#", "")) - 1  # 0=No, 1=Key, 2=Source, 3=Target
-		if col_index <= 1:  # No 列和 Key 列不可编辑
+		if col_index <= 1:
 			self.log("No 列和 Key 列不可直接编辑")
 			return
 
 		current_values = list(self.tree.item(item, "values"))
-		current_val = current_values[col_index]  # 例如 source 或 target
+		line_no = current_values[0]
+		key = current_values[1]
+		current_val = current_values[col_index]
 
-		new_val = self.show_edit_dialog("编辑", f"修改当前值:", current_val, event=event)
+		new_val = self.show_edit_dialog("编辑", f"修改 {key} 的值:", current_val, event=event)
 		if new_val is not None and new_val != current_val:
-			key = current_values[1]  # Key 在索引1
-			# 更新内部 rows
-			for row in self.rows:
-				if row[0] == key:
-					row[col_index - 1] = new_val     # row 只有 [key, source, target]，source索引1，target索引2
-					break
-			# 同步字典
-			if col_index == 2:  # Source
+			# 更新字典
+			if col_index == 2:
 				self.source_data[key] = new_val
-			elif col_index == 3:  # Target
+			elif col_index == 3:
 				self.target_data[key] = new_val
-
+			# 更新 rows 中对应行
+			for row in self.rows:
+				if row[0] == line_no:
+					row[col_index] = new_val
+					break
 			current_values[col_index] = new_val
 			self.tree.item(item, values=current_values)
-			self.log(f"更新键 '{key}' 的 {'Source' if col_index==2 else 'Target'} 值")
+			self.log(f"更新行 {line_no} 键 '{key}' 的 {'Source' if col_index==2 else 'Target'} 值")
 
 	def on_search_enter(self, event):
 		self.search_in_table()
 
 	# ---------- 语言交换 ----------
 	def swap_languages(self):
-		# 交换字典
-		self.source_data, self.target_data = self.target_data, self.source_data
-		# 交换语言标签
+		# 交换标签与路径
 		self.source_lang, self.target_lang = self.target_lang, self.source_lang
-		# 重建行数据
+		self.source_file, self.target_file = self.target_file, self.source_file
+		# 交换数据和原始行
+		self.source_data, self.target_data = self.target_data, self.source_data
+		self.source_entries, self.target_entries = self.target_entries, self.source_entries
+		self.source_raw_lines, self.target_raw_lines = self.target_raw_lines, self.source_raw_lines
+		# 重建表格
 		self.rows = self.build_rows()
 		self.apply_filter_and_sort()
 		self.log(f"已交换语言方向。当前 Source: {self.source_lang}, Target: {self.target_lang}")
@@ -414,55 +418,39 @@ class TransEditorApp:
 
 	# ---------- 百度翻译选中行 ----------
 	def translate_selected(self):
-		if not self.baidu_appid or not self.baidu_secret:
-			messagebox.showwarning("未配置API", "请先在设置中配置百度翻译API的APP ID和密钥")
-			self.setup_baidu_api()
-			if not self.baidu_appid or not self.baidu_secret:
-				return
-
-		selected_items = self.tree.selection()
-		if not selected_items:
-			messagebox.showinfo("提示", "请先在表格中选择至少一行")
+		# ... 检查 API 配置 ...
+		selected = self.tree.selection()
+		if not selected:
+			messagebox.showinfo("提示", "请先选择至少一行")
 			return
-
-		# 确定语言代码 (百度API: en, zh)
 		lang_map = {"EN": "en", "CN": "zh"}
 		from_lang = lang_map.get(self.source_lang, "en")
 		to_lang = lang_map.get(self.target_lang, "zh")
 
-		# 在线程中执行翻译，避免界面卡顿
 		def do_translate():
-			success_count = 0
-			fail_count = 0
-			for item in selected_items:
-				values = self.tree.item(item, "values")
+			for item in selected:
+				values = list(self.tree.item(item, "values"))
+				line_no = values[0]
 				key = values[1]
-				src_text = values[2]  # source列
+				src_text = values[2]
 				if not src_text.strip():
-					self.log(f"跳过空文本行: {key}")
+					self.log(f"跳过空文本行 {line_no}: {key}")
 					continue
 				try:
-					translated = baidu_translate(src_text, from_lang, to_lang, 
+					translated = baidu_translate(src_text, from_lang, to_lang,
 												self.baidu_appid, self.baidu_secret)
-					# 更新数据
-					values_list = list(values)
-					values_list[3] = translated  # target列
-					self.tree.item(item, values=values_list)
-					# 更新内部结构
-					for row in self.rows:
-						if row[0] == key:
-							row[2] = translated
-							break
+					values[3] = translated
+					self.tree.item(item, values=values)
+					# 更新内部数据
 					self.target_data[key] = translated
-					success_count += 1
-					self.log(f"翻译成功: {key}")
+					for row in self.rows:
+						if row[0] == line_no:
+							row[3] = translated
+							break
+					self.log(f"翻译成功 行 {line_no}: {key}")
 				except Exception as e:
-					fail_count += 1
-					self.log(f"翻译失败 [{key}]: {e}")
-			self.log(f"批量翻译完成: 成功 {success_count} 条, 失败 {fail_count} 条")
-
+					self.log(f"翻译失败 行 {line_no}: {e}")
 		threading.Thread(target=do_translate, daemon=True).start()
-		self.log("开始翻译选中的行...")
 
 	# ---------- 百度API设置 ----------
 	def setup_baidu_api(self):
@@ -582,6 +570,102 @@ class TransEditorApp:
 			self.log("设置已保存到配置文件。")
 		except Exception as e:
 			self.log(f"保存配置文件失败: {e}")
+
+	def save_file(self, filepath, data_dict, raw_lines, entries):
+		"""根据原始行重建文件，替换有效行的值
+		entries: [(line_no, key, value), ...]
+		"""
+		try:
+			with open(filepath, 'w', encoding='utf-8') as f:
+				# 构建行号 -> 键的映射
+				line_key_map = {line_no: key for line_no, key, _ in entries}
+				for i, line in enumerate(raw_lines, start=1):
+					if i in line_key_map:
+						key = line_key_map[i]
+						# 使用 data_dict 中的最新值，若键不存在则保留原值
+						new_val = data_dict.get(key, "")
+						f.write(f"{key}={new_val}\n")
+					else:
+						f.write(line)  # 非键值对行原样写入
+			self.log(f"文件已保存: {filepath}")
+			return True
+		except Exception as e:
+			self.log(f"保存失败: {filepath} - {e}")
+			return False
+		
+	# ---------- 保存对话框 ----------
+	def save_action(self):
+		dialog = tk.Toplevel(self.root)
+		dialog.title("保存文件")
+		dialog.geometry("280x280")
+		dialog.resizable(False, False)
+		dialog.transient(self.root)
+		dialog.grab_set()
+
+		# 居中显示
+		x = self.root.winfo_x() + (self.root.winfo_width() - 280) // 2
+		y = self.root.winfo_y() + (self.root.winfo_height() - 280) // 2
+		dialog.geometry(f"+{x}+{y}")
+
+		ttk.Label(dialog, text="选择保存选项", font=("TkDefaultFont", 10, "bold")).pack(pady=10)
+
+		# 源文件操作
+		src_frame = ttk.Frame(dialog)
+		src_frame.pack(pady=5)
+		ttk.Button(src_frame, text="保存源文件",
+				command=lambda: self._save_direct(
+					self.source_file, self.source_data, self.source_raw_lines, self.source_entries, dialog)
+				).pack(side=tk.LEFT, padx=2)
+		ttk.Button(src_frame, text="另存为...",
+				command=lambda: self._save_as(
+					self.source_data, self.source_raw_lines, self.source_entries, dialog, default_name="source_modified.txt")
+				).pack(side=tk.LEFT, padx=2)
+
+		# 目标文件操作
+		tgt_frame = ttk.Frame(dialog)
+		tgt_frame.pack(pady=5)
+		ttk.Button(tgt_frame, text="保存目标文件",
+				command=lambda: self._save_direct(
+					self.target_file, self.target_data, self.target_raw_lines, self.target_entries, dialog)
+				).pack(side=tk.LEFT, padx=2)
+		ttk.Button(tgt_frame, text="另存为...",
+				command=lambda: self._save_as(
+					self.target_data, self.target_raw_lines, self.target_entries, dialog, default_name="target_modified.txt")
+				).pack(side=tk.LEFT, padx=2)
+
+		ttk.Separator(dialog, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=10, pady=10)
+
+		ttk.Button(dialog, text="全部保存 (覆盖原文件)",
+				command=lambda: self._save_all(dialog)).pack(pady=5)
+		ttk.Button(dialog, text="取消", command=dialog.destroy).pack(pady=5)
+
+	def _save_direct(self, filepath, data_dict, raw_lines, entries, dialog=None):
+		"""直接覆盖保存；若路径为空则自动转另存为"""
+		if not filepath:
+			self._save_as(data_dict, raw_lines, entries, dialog)
+			return
+		success = self.save_file(filepath, data_dict, raw_lines, entries)
+		if success and dialog:
+			dialog.destroy()
+
+	def _save_as(self, data_dict, raw_lines, entries, dialog=None, default_name="output.txt"):
+		filepath = filedialog.asksaveasfilename(
+			defaultextension=".txt",
+			filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+			initialfile=default_name
+		)
+		if filepath:
+			success = self.save_file(filepath, data_dict, raw_lines, entries)
+			if success and dialog:
+				dialog.destroy()
+
+	def _save_all(self, dialog):
+		"""依次保存源文件和目标文件（跳过空路径）"""
+		if self.source_file:
+			self.save_file(self.source_file, self.source_data, self.source_raw_lines, self.source_entries)
+		if self.target_file:
+			self.save_file(self.target_file, self.target_data, self.target_raw_lines, self.target_entries)
+		dialog.destroy()
 
 	def on_close(self):
 		self.save_config()
