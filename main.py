@@ -14,7 +14,7 @@ CONFIG_FILE = "config.json"
 
 # ===================== 百度翻译 API 封装 =====================
 def baidu_translate(q, from_lang, to_lang, appid, secret_key):
-	"""调用百度通用翻译API，返回翻译后的文本"""
+	"""调用百度通用翻译API"""
 	if not q or not q.strip():
 		return ""
 	salt = str(random.randint(32768, 65536))
@@ -57,6 +57,7 @@ class TransEditorApp:
 		self.target_lang = "CN"
 		self.source_file = None
 		self.target_file = None
+		self.target_modified = False
 
 		# 排序状态
 		self.sort_column = None
@@ -76,14 +77,15 @@ class TransEditorApp:
 		self.load_config()
 		# 自动加载上次打开的文件（如果存在）
 		if self.source_file and os.path.exists(self.source_file):
-			self.load_source_file(silent=True)   # 稍后定义 silent 参数
+			self.load_source_file(silent=True)
 		if self.target_file and os.path.exists(self.target_file):
 			self.load_target_file(silent=True)
 
-		
-		# 初始化日志
-		self.log("应用启动成功。")
+		# 注册关闭事件
 		self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+		# 绑定Ctrl+S保存
+		self.root.bind("<Control-s>", lambda e: self.save_target())
+		self.log("应用启动成功。")
 
 	# ---------- 界面布局 ----------
 	def create_menu(self):
@@ -92,11 +94,11 @@ class TransEditorApp:
 		file_menu.add_command(label="加载源文件 (Source)", command=self.load_source_file)
 		file_menu.add_command(label="加载目标文件 (Target)", command=self.load_target_file)
 		file_menu.add_separator()
-		file_menu.add_command(label="退出", command=self.root.quit)
+		file_menu.add_command(label="退出", command=self.on_close)
 		menubar.add_cascade(label="文件", menu=file_menu)
 
 		settings_menu = tk.Menu(menubar, tearoff=0)
-		settings_menu.add_command(label="百度翻译API设置", command=self.setup_baidu_api)
+		settings_menu.add_command(label="翻译API设置", command=self.setup_baidu_api)
 		menubar.add_cascade(label="设置", menu=settings_menu)
 		self.root.config(menu=menubar)
 
@@ -107,10 +109,9 @@ class TransEditorApp:
 		ttk.Button(toolbar, text="加载源文件", command=self.load_source_file).pack(side=tk.LEFT, padx=2)
 		ttk.Button(toolbar, text="加载目标文件", command=self.load_target_file).pack(side=tk.LEFT, padx=2)
 		ttk.Separator(toolbar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=5)
-		ttk.Button(toolbar, text="交换语言方向", command=self.swap_languages).pack(side=tk.LEFT, padx=2)
 		ttk.Button(toolbar, text="翻译选中行", command=self.translate_selected).pack(side=tk.LEFT, padx=2)
 		ttk.Button(toolbar, text="跳转到行", command=self.goto_line).pack(side=tk.LEFT, padx=2)
-		ttk.Button(toolbar, text="保存", command=self.save_action).pack(side=tk.RIGHT, padx=2)
+		ttk.Button(toolbar, text="保存", command=self.save_target).pack(side=tk.RIGHT, padx=2)
 
 	def create_filter_frame(self):
 		filter_frame = ttk.Frame(self.root)
@@ -154,7 +155,6 @@ class TransEditorApp:
 		vsb = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
 		hsb = ttk.Scrollbar(table_frame, orient="horizontal", command=self.tree.xview)
 		self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-
 		self.tree.grid(row=0, column=0, sticky="nsew")
 		vsb.grid(row=0, column=1, sticky="ns")
 		hsb.grid(row=1, column=0, sticky="ew")
@@ -173,11 +173,10 @@ class TransEditorApp:
 		self.log_text = tk.Text(log_frame, height=8, state=tk.DISABLED, wrap=tk.WORD)
 		log_scroll = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
 		self.log_text.configure(yscrollcommand=log_scroll.set)
-
 		self.log_text.grid(row=0, column=0, sticky="nsew")
 		log_scroll.grid(row=0, column=1, sticky="ns")
 
-	# ---------- 日志方法 ----------
+	# ========== 日志 ==========
 	def log(self, msg):
 		timestamp = datetime.now().strftime("%H:%M:%S")
 		line = f"[{timestamp}] {msg}\n"
@@ -195,16 +194,12 @@ class TransEditorApp:
 		entries = []
 		data_dict = {}
 		comments = 0
-		labels = 0
 		for i, line in enumerate(lines, start=1):
 			stripped = line.strip()
 			if not stripped:
 				continue
 			if stripped.startswith("//"):
 				comments += 1
-				continue
-			if stripped.startswith("==") and stripped.endswith("=="):
-				labels += 1
 				continue
 			if "=" in stripped:
 				key, _, value = stripped.partition("=")
@@ -213,7 +208,7 @@ class TransEditorApp:
 				if key:
 					entries.append((i, key, value))
 					data_dict[key] = value
-		self.log(f"解析 {label} 文件完成: {len(entries)} 个键值对, 注释 {comments} 行, 标注 {labels} 行")
+		self.log(f"解析 {label} 文件完成: {len(entries)} 个键值对, 注释 {comments} 行")
 		return entries, data_dict
 
 	def load_source_file(self, path=None, silent=False):
@@ -256,6 +251,7 @@ class TransEditorApp:
 			self.log(f"读取目标文件失败: {e}")
 			return
 		self.target_entries, self.target_data = self._parse_lines(self.target_raw_lines, "目标语言")
+		self.target_modified = False
 		self.log(f"目标语言文件已加载，共 {len(self.target_data)} 条记录")
 		self.save_config()
 		self.refresh_table()
@@ -337,6 +333,7 @@ class TransEditorApp:
 
 		new_val = self.show_edit_dialog("编辑", f"修改 {key} 的值:", current_val, event=event)
 		if new_val is not None and new_val != current_val:
+			self.target_modified =  True
 			# 更新字典
 			if col_index == 2:
 				self.source_data[key] = new_val
@@ -481,6 +478,7 @@ class TransEditorApp:
 					self.tree.item(item, values=values)
 					# 更新内部数据
 					self.target_data[key] = translated
+					self.target_modified = True
 					for row in self.rows:
 						if row[0] == line_no:
 							row[3] = translated
@@ -570,6 +568,15 @@ class TransEditorApp:
 		text_widget.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 		text_widget.insert("1.0", initial_value)
 
+		# ---------- 热键与自动聚焦 ----------
+		dialog.bind("<Escape>", lambda e: on_cancel())          # Esc 取消
+		text_widget.bind("<Return>", lambda e: (on_ok(), "break"))  # Enter 确定且不换行
+		text_widget.focus_set()                                 # 打开时自动聚焦到文本框
+		# 可选：让光标定位到末尾，方便直接追加修改
+		text_widget.mark_set("insert", "end")
+		text_widget.see("end")
+		# ---------------------------------
+
 		self.root.wait_window(dialog)
 		return result[0]
 
@@ -625,92 +632,50 @@ class TransEditorApp:
 						f.write(f"{key}={new_val}\n")
 					else:
 						f.write(line)  # 非键值对行原样写入
-			self.log(f"文件已保存: {filepath}")
 			return True
 		except Exception as e:
-			self.log(f"保存失败: {filepath} - {e}")
 			return False
 		
-	# ---------- 保存对话框 ----------
-	def save_action(self):
-		dialog = tk.Toplevel(self.root)
-		dialog.title("保存文件")
-		dialog.geometry("280x280")
-		dialog.resizable(False, False)
-		dialog.transient(self.root)
-		dialog.grab_set()
+	def save_target(self):
+		"""直接保存目标语言文件，若未加载则另存为"""
+		if not self.target_file:
+			path = filedialog.asksaveasfilename(defaultextension=".txt", filetypes=[("Text files", "*.txt")])
+			if not path:
+				return
+			# 如果没有加载目标文件，需要先创建空的 raw_lines 和 entries
+			if not self.target_raw_lines:
+				self.target_raw_lines = []
+				self.target_entries = []
+		else:
+			path = self.target_file
 
-		# 居中显示
-		x = self.root.winfo_x() + (self.root.winfo_width() - 280) // 2
-		y = self.root.winfo_y() + (self.root.winfo_height() - 280) // 2
-		dialog.geometry(f"+{x}+{y}")
+		success = self.save_file(path, self.target_data, self.target_raw_lines, self.target_entries)
+		if success:
+			self.target_modified = False
+			self.log(f"保存成功，目标语言已保存至:\n{path}")
 
-		ttk.Label(dialog, text="选择保存选项", font=("TkDefaultFont", 10, "bold")).pack(pady=10)
-
-		# 源文件操作
-		src_frame = ttk.Frame(dialog)
-		src_frame.pack(pady=5)
-		ttk.Button(src_frame, text="保存源文件",
-				command=lambda: self._save_direct(
-					self.source_file, self.source_data, self.source_raw_lines, self.source_entries, dialog)
-				).pack(side=tk.LEFT, padx=2)
-		ttk.Button(src_frame, text="另存为...",
-				command=lambda: self._save_as(
-					self.source_data, self.source_raw_lines, self.source_entries, dialog, default_name="source_modified.txt")
-				).pack(side=tk.LEFT, padx=2)
-
-		# 目标文件操作
-		tgt_frame = ttk.Frame(dialog)
-		tgt_frame.pack(pady=5)
-		ttk.Button(tgt_frame, text="保存目标文件",
-				command=lambda: self._save_direct(
-					self.target_file, self.target_data, self.target_raw_lines, self.target_entries, dialog)
-				).pack(side=tk.LEFT, padx=2)
-		ttk.Button(tgt_frame, text="另存为...",
-				command=lambda: self._save_as(
-					self.target_data, self.target_raw_lines, self.target_entries, dialog, default_name="target_modified.txt")
-				).pack(side=tk.LEFT, padx=2)
-
-		ttk.Separator(dialog, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=10, pady=10)
-
-		ttk.Button(dialog, text="全部保存 (覆盖原文件)",
-				command=lambda: self._save_all(dialog)).pack(pady=5)
-		ttk.Button(dialog, text="取消", command=dialog.destroy).pack(pady=5)
-
-	def _save_direct(self, filepath, data_dict, raw_lines, entries, dialog=None):
-		"""直接覆盖保存；若路径为空则自动转另存为"""
-		if not filepath:
-			self._save_as(data_dict, raw_lines, entries, dialog)
-			return
-		success = self.save_file(filepath, data_dict, raw_lines, entries)
-		if success and dialog:
-			dialog.destroy()
-
-	def _save_as(self, data_dict, raw_lines, entries, dialog=None, default_name="output.txt"):
-		filepath = filedialog.asksaveasfilename(
-			defaultextension=".txt",
-			filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
-			initialfile=default_name
-		)
-		if filepath:
-			success = self.save_file(filepath, data_dict, raw_lines, entries)
-			if success and dialog:
-				dialog.destroy()
-
-	def _save_all(self, dialog):
-		"""依次保存源文件和目标文件（跳过空路径）"""
-		if self.source_file:
-			self.save_file(self.source_file, self.source_data, self.source_raw_lines, self.source_entries)
-		if self.target_file:
-			self.save_file(self.target_file, self.target_data, self.target_raw_lines, self.target_entries)
-		dialog.destroy()
-
+	# ========== 关闭窗口 ==========
 	def on_close(self):
 		self.save_config()
+		"""关闭前询问是否保存目标语言"""
+		if not self.target_file and not self.target_data:
+			self.root.destroy()
+			return
+		
+		if not self.target_modified:
+			self.root.destroy()
+			return
+
+		# 有修改未保存的可能，弹出确认
+		answer = messagebox.askyesnocancel("退出确认", "是否保存目标语言的修改？\n点击“是”保存后退出，“否”不保存退出，“取消”返回。")
+		if answer is None:  # 取消
+			return
+		elif answer:  # 是
+			self.save_target()
+		# 否或不保存直接退出
 		self.root.destroy()
 
-
-# ===================== 启动入口 =====================
+# ========== 启动 ==========
 if __name__ == "__main__":
 	root = tk.Tk()
 	app = TransEditorApp(root)
