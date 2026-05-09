@@ -43,7 +43,7 @@ class TransEditorApp:
 	def __init__(self, root):
 		self.root = root
 		self.root.title("游戏翻译编辑器 - Game Translation Editor")
-		self.root.geometry("1000x650")
+		self.root.geometry("1200x650")
 
 		# 数据存储
 		self.source_data = {}   # 源语言键值对
@@ -110,6 +110,7 @@ class TransEditorApp:
 		ttk.Button(toolbar, text="加载目标文件", command=self.load_target_file).pack(side=tk.LEFT, padx=2)
 		ttk.Separator(toolbar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=5)
 		ttk.Button(toolbar, text="翻译选中行", command=self.translate_selected).pack(side=tk.LEFT, padx=2)
+		ttk.Button(toolbar, text="合并选中行", command=self.merge_revised).pack(side=tk.LEFT, padx=2)
 		ttk.Button(toolbar, text="跳转到行", command=self.goto_line).pack(side=tk.LEFT, padx=2)
 		ttk.Button(toolbar, text="保存", command=self.save_target).pack(side=tk.RIGHT, padx=2)
 
@@ -140,16 +141,20 @@ class TransEditorApp:
 		table_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=5, pady=5)
 
 		# Treeview 表格
-		columns = ("no", "key", "source", "target")
+		columns = ("no", "key", "source", "target", "revised")
 		self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="extended")
+
 		self.tree.heading("no", text="No", command=lambda: self.sort_by("no"))
 		self.tree.heading("key", text="Key", command=lambda: self.sort_by("key"))
 		self.tree.heading("source", text=f"Source ({self.source_lang})", command=lambda: self.sort_by("source"))
 		self.tree.heading("target", text=f"Target ({self.target_lang})", command=lambda: self.sort_by("target"))
+		self.tree.heading("revised", text="Revised", command=lambda: self.sort_by("revised"))
+
 		self.tree.column("no", width=50, anchor="center")
 		self.tree.column("key", width=200)
 		self.tree.column("source", width=350)
 		self.tree.column("target", width=350)
+		self.tree.column("revised", width=100)
 
 		# 滚动条
 		vsb = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
@@ -264,7 +269,7 @@ class TransEditorApp:
 		target_dict = {key: val for _, key, val in self.target_entries} if self.target_entries else {}
 		for line_no, key, src_val in self.source_entries:
 			tgt_val = target_dict.get(key, "")
-			rows.append([line_no, key, src_val, tgt_val])
+			rows.append([line_no, key, src_val, tgt_val, ""])
 		return rows
 
 	def refresh_table(self):
@@ -290,6 +295,8 @@ class TransEditorApp:
 			filtered.sort(key=lambda x: str(x[2]).lower(), reverse=self.sort_reverse)
 		elif self.sort_column == "target":
 			filtered.sort(key=lambda x: str(x[3]).lower(), reverse=self.sort_reverse)
+		elif self.sort_column == "revised":
+			filtered.sort(key=lambda x: str(x[4]).lower(), reverse=self.sort_reverse)
 
 		self.tree.delete(*self.tree.get_children())
 		for row in filtered:
@@ -346,7 +353,8 @@ class TransEditorApp:
 					break
 			current_values[col_index] = new_val
 			self.tree.item(item, values=current_values)
-			self.log(f"更新行 {line_no} 键 '{key}' 的 {'Source' if col_index==2 else 'Target'} 值")
+			col_name = {2: "Source", 3: "Target", 4: "Revised"}.get(col_index, "")
+			self.log(f"更新行 {line_no} 键 '{key}' 的 {col_name} 值")
 
 	def on_search_enter(self, event):
 		self.search_in_table()
@@ -384,6 +392,37 @@ class TransEditorApp:
 		self.rows = self.build_rows()
 		self.apply_filter_and_sort()
 		self.log(f"已交换语言方向。当前 Source: {self.source_lang}, Target: {self.target_lang}")
+
+	def merge_revised(self):
+		selected = self.tree.selection()
+		if not selected:
+			messagebox.showinfo("提示", "请先选择至少一行")
+			return
+
+		merged_count = 0
+		for item in selected:
+			values = list(self.tree.item(item, "values"))
+			line_no = values[0]
+			key = values[1]
+			revised_val = values[4] if len(values) > 4 else ""
+			if revised_val.strip() == "":
+				continue  # 修订列为空则不合并
+			# 更新目标列
+			values[3] = revised_val
+			# 清空修订列
+			values[4] = ""
+			self.tree.item(item, values=values)
+			# 更新内部数据
+			self.target_data[key] = revised_val
+			for row in self.rows:
+				if row[0] == line_no:
+					row[3] = revised_val
+					row[4] = ""
+					break
+			merged_count += 1
+			self.target_modified = True
+
+		self.log(f"已合并 {merged_count} 行的修订内容到目标列")
 
 	def search_in_table(self, event=None):
 		"""循环搜索：
@@ -474,14 +513,14 @@ class TransEditorApp:
 				try:
 					translated = baidu_translate(src_text, from_lang, to_lang,
 												self.baidu_appid, self.baidu_secret)
-					values[3] = translated
+					values[4] = translated
 					self.tree.item(item, values=values)
 					# 更新内部数据
 					self.target_data[key] = translated
 					self.target_modified = True
 					for row in self.rows:
 						if row[0] == line_no:
-							row[3] = translated
+							row[4] = translated
 							break
 					self.log(f"翻译成功 行 {line_no}: {key}")
 				except Exception as e:
