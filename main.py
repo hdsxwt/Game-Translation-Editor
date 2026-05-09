@@ -85,6 +85,12 @@ class TransEditorApp:
 		self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 		# 绑定Ctrl+S保存
 		self.root.bind("<Control-s>", lambda e: self.save_target())
+		self.root.bind("<Control-w>", lambda e: self.on_close())
+		self.root.bind("<Control-q>", lambda e: self.on_close())
+		self.root.bind("<Control-f>", lambda e: self.focus_search())
+		self.root.bind("<Control-o>", lambda e: self.load_source_file())
+		self.root.bind_all("<Control-Shift-KeyPress-O>", lambda e: self.load_target_file())
+		self.root.bind("<Control-g>", lambda e: self.goto_line())
 		self.log("应用启动成功。")
 
 	# ---------- 界面布局 ----------
@@ -129,9 +135,9 @@ class TransEditorApp:
 		# 搜索
 		ttk.Label(filter_frame, text="搜索:").pack(side=tk.LEFT)
 		self.search_var = tk.StringVar()
-		search_entry = ttk.Entry(filter_frame, textvariable=self.search_var, width=30)
-		search_entry.pack(side=tk.LEFT, padx=5)
-		search_entry.bind("<Return>", self.on_search_enter)   # 回车触发搜索
+		self.search_entry = ttk.Entry(filter_frame, textvariable=self.search_var, width=30)
+		self.search_entry.pack(side=tk.LEFT, padx=5)
+		self.search_entry.bind("<Return>", self.on_search_enter)   # 回车触发搜索
 
 		search_btn = ttk.Button(filter_frame, text="查找下一个", command=self.search_in_table)
 		search_btn.pack(side=tk.LEFT, padx=2)
@@ -692,6 +698,12 @@ class TransEditorApp:
 		if success:
 			self.target_modified = False
 			self.log(f"保存成功，目标语言已保存至:\n{path}")
+
+	def focus_search(self):
+		"""聚焦搜索框并选中全部文本"""
+		self.search_entry.focus_set()
+		self.search_entry.selection_range(0, 'end')
+		return "break"  # 阻止事件进一步传递
 
 	# ========== 关闭窗口 ==========
 	def on_close(self):
